@@ -1,5 +1,7 @@
 # dex2dot0/skills
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Open-source agent skills for the [skills.sh](https://skills.sh) ecosystem.
 
 ## Disclaimers
@@ -15,7 +17,7 @@ Directs agents to perform file copies, moves, and renames via shell ops (`mv`, `
 Install:
 
 ```bash
-npx skills add dex2dot0/skills@low-token-copy
+npx skills add dex2dot0/skills --skill low-token-copy
 ```
 
 See [`skills/low-token-copy/SKILL.md`](skills/low-token-copy/SKILL.md).
@@ -27,7 +29,13 @@ Directs agents to perform in-file edits via targeted patches (`StrReplace` or eq
 Install:
 
 ```bash
-npx skills add dex2dot0/skills@low-token-edit
+npx skills add dex2dot0/skills --skill low-token-edit
+```
+
+To install both skills at once:
+
+```bash
+npx skills add dex2dot0/skills
 ```
 
 See [`skills/low-token-edit/SKILL.md`](skills/low-token-edit/SKILL.md).
@@ -151,3 +159,7 @@ tests/
 ```
 
 Each skill is a directory whose name matches the `name` field in its `SKILL.md` frontmatter.
+
+## License
+
+[MIT](LICENSE) © dex2dot0
