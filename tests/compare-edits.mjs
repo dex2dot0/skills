@@ -1,0 +1,205 @@
+#!/usr/bin/env node
+// Compare token cost of in-file edits using:
+//   Approach A — Read + Write (full-file rewrite, common agent default)
+//   Approach B — StrReplace patches scoped to the actual change (low-token-edit skill)
+//
+// Deterministic: uses the standard ~4 chars/token heuristic and a fixed
+// per-tool-call envelope. No model calls, no randomness.
+//
+// Usage:
+//   node tests/compare-edits.mjs            # print table
+//   node tests/compare-edits.mjs --write    # also update README.md
+
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, "..");
+
+const CHARS_PER_TOKEN = 4;
+const TOOL_ENVELOPE = 20;
+
+// Scenarios model in-file edits on a file of `file` tokens, where `changes`
+// is an array of { old, new } token counts for each StrReplace patch needed.
+// `changes: null` represents a "total rewrite" where Write is unavoidable
+// (no stable anchors remain to patch against).
+const scenarios = [
+  {
+    name: "Typo fix (1 char) in 500-token file",
+    file: 500,
+    changes: [{ old: 20, new: 20 }],
+    note: "~0.1% change",
+  },
+  {
+    name: "Paragraph rewrite in 1,000-token file",
+    file: 1000,
+    changes: [{ old: 80, new: 100 }],
+    note: "~10% change",
+  },
+  {
+    name: "Add 200-token section to 1,500-token doc",
+    file: 1500,
+    changes: [{ old: 40, new: 240 }],
+    note: "~15% new content",
+  },
+  {
+    name: "Rename term across 2,000-token file (replace_all)",
+    file: 2000,
+    changes: [{ old: 15, new: 15 }],
+    note: "1 call, 8+ hits",
+  },
+  {
+    name: "Multi-change: 4 edits in 2,000-token file",
+    file: 2000,
+    changes: [
+      { old: 30, new: 30 },
+      { old: 50, new: 60 },
+      { old: 40, new: 45 },
+      { old: 80, new: 90 },
+    ],
+    note: "~15% change",
+  },
+  {
+    name: "Major restructure (~60%) in 2,000-token file",
+    file: 2000,
+    changes: [
+      { old: 200, new: 250 },
+      { old: 150, new: 200 },
+      { old: 180, new: 220 },
+      { old: 220, new: 280 },
+      { old: 160, new: 200 },
+    ],
+    note: "5 patches, patches ≈ file",
+  },
+  {
+    name: "Total rewrite (~95%) of 2,000-token file",
+    file: 2000,
+    changes: null,
+    note: "Write is honest",
+  },
+];
+
+// ---------- Cost models ----------
+
+function approachA(s) {
+  // Read the whole file + Write the whole file.
+  const inTok = s.file;
+  const outTok = s.file;
+  const calls = 2;
+  const overhead = calls * TOOL_ENVELOPE;
+  return { in: inTok, out: outTok, overhead, calls, total: inTok + outTok + overhead };
+}
+
+function approachB(s) {
+  // Skill default: no pre-Read; one StrReplace per change, costing old+new tokens.
+  // When changes is null, patch isn't viable → fall back to Write.
+  if (!s.changes) {
+    const outTok = s.file;
+    const calls = 1;
+    return { in: 0, out: outTok, overhead: calls * TOOL_ENVELOPE, calls, total: outTok + calls * TOOL_ENVELOPE, fellBack: true };
+  }
+  const outTok = s.changes.reduce((sum, c) => sum + c.old + c.new, 0);
+  const calls = s.changes.length;
+  const overhead = calls * TOOL_ENVELOPE;
+  return { in: 0, out: outTok, overhead, calls, total: outTok + overhead };
+}
+
+const pct = (a, b) => ((1 - b / a) * 100).toFixed(1);
+
+// ---------- Run ----------
+
+const rows = scenarios.map((s) => {
+  const a = approachA(s);
+  const b = approachB(s);
+  return {
+    name: s.name,
+    note: s.note,
+    file: s.file,
+    aTotal: a.total, aCalls: a.calls, aOut: a.out,
+    bTotal: b.total, bCalls: b.calls, bOut: b.out, fellBack: b.fellBack === true,
+    saved: a.total - b.total,
+    savedPct: pct(a.total, b.total),
+    outSavedPct: pct(a.out, b.out),
+  };
+});
+
+// ---------- Output ----------
+
+const fmt = (n) => n.toLocaleString("en-US");
+
+function printTable() {
+  const header = `\nLow-Token-Edit: Approach Comparison`;
+  console.log(header);
+  console.log("=".repeat(header.length - 1));
+  console.log(`(Heuristic: ${CHARS_PER_TOKEN} chars/token, ${TOOL_ENVELOPE} tokens tool envelope.)\n`);
+
+  const cols = [
+    ["Scenario", 52],
+    ["A tokens", 11],
+    ["B tokens", 11],
+    ["Saved", 10],
+    ["Saved %", 9],
+    ["Out %", 9],
+    ["A calls", 9],
+    ["B calls", 9],
+  ];
+  console.log(cols.map(([n, w]) => String(n).padEnd(w)).join(""));
+  console.log(cols.map(([, w]) => "-".repeat(w - 1) + " ").join(""));
+  for (const r of rows) {
+    console.log(
+      [
+        r.name.padEnd(52),
+        fmt(r.aTotal).padEnd(11),
+        (fmt(r.bTotal) + (r.fellBack ? "*" : "")).padEnd(11),
+        fmt(r.saved).padEnd(10),
+        `${r.savedPct}%`.padEnd(9),
+        `${r.outSavedPct}%`.padEnd(9),
+        String(r.aCalls).padEnd(9),
+        String(r.bCalls).padEnd(9),
+      ].join(""),
+    );
+  }
+  console.log("\n* Approach B falls back to Write — patch is not viable when nearly all content is new.\n");
+}
+
+function buildMarkdown() {
+  const lines = [
+    `<!-- BENCHMARK-EDIT:START -->`,
+    `<!-- Generated by tests/compare-edits.mjs. Do not edit by hand. -->`,
+    ``,
+    `Heuristic: ~${CHARS_PER_TOKEN} chars/token, ${TOOL_ENVELOPE} tokens per tool-call envelope.`,
+    `"Out %" is savings on **output** tokens specifically (the expensive direction).`,
+    `\`*\` indicates Approach B fell back to Write because the change was near-total and patches were not viable.`,
+    ``,
+    `| Scenario | Approach A (Read+Write) | Approach B (StrReplace patches) | Saved | Saved % | Output % | A calls | B calls |`,
+    `|---|---:|---:|---:|---:|---:|---:|---:|`,
+    ...rows.map(
+      (r) =>
+        `| ${r.name} | ${fmt(r.aTotal)} | ${fmt(r.bTotal)}${r.fellBack ? "*" : ""} | ${fmt(r.saved)} | ${r.savedPct}% | ${r.outSavedPct}% | ${r.aCalls} | ${r.bCalls} |`,
+    ),
+    ``,
+    `<!-- BENCHMARK-EDIT:END -->`,
+  ];
+  return lines.join("\n");
+}
+
+function writeReadme() {
+  const readmePath = path.join(repoRoot, "README.md");
+  const original = fs.readFileSync(readmePath, "utf8");
+  const block = buildMarkdown();
+  const startTag = "<!-- BENCHMARK-EDIT:START -->";
+  const endTag = "<!-- BENCHMARK-EDIT:END -->";
+  if (!original.includes(startTag) || !original.includes(endTag)) {
+    console.error(`README.md is missing ${startTag} / ${endTag} markers; not writing.`);
+    process.exit(1);
+  }
+  const before = original.slice(0, original.indexOf(startTag));
+  const after = original.slice(original.indexOf(endTag) + endTag.length);
+  fs.writeFileSync(readmePath, before + block + after);
+  console.log(`Updated README.md between BENCHMARK-EDIT markers.`);
+}
+
+printTable();
+if (process.argv.includes("--write")) writeReadme();
