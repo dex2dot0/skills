@@ -1,0 +1,8 @@
+# Exclude repo infrastructure from `git archive` tarballs.
+# Skills CLI installers (npx skills add) read only the `skills/<name>/`
+# subtree, so these entries also serve as documentation that the rest
+# of the repo is not part of any installable skill.
+tests/           export-ignore
+test-sandbox/    export-ignore
+.github/         export-ignore
+.gitattributes   export-ignore
